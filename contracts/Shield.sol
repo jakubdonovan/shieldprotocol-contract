@@ -16,8 +16,8 @@ import "@uniswap/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
 import "./TokenClawback.sol";
 
 
-// ProxyErc20
-contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
+
+contract ShieldProtocol is Context, IERC20, Ownable, TokenClawback {
     using SafeMath for uint256;
     mapping(address => uint256) private _rOwned;
     mapping(address => uint256) private _tOwned;
@@ -39,9 +39,8 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
     uint256 private _rTotal = (MAX - (MAX % _tTotal));
     uint256 private _tFeeTotal;
     uint256 private _maxTxAmount = _tTotal;
-    uint256 private openBlock;
-    uint256 private openTs;
-    uint256 private _swapTokensAtAmount = _tTotal.div(1000);
+    
+    
     uint256 private _maxWalletAmount = _tTotal;
     uint256 private _taxAmt;
     uint256 private _reflectAmt;
@@ -50,11 +49,13 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
     address payable private _feeAddrWallet3;
     address payable private _feeAddrWallet4;
     address payable private _feeAddrWallet5;
+    // 0, 1, 2
     uint256 private constant _bl = 2;
-    uint256 private swapAmountPerTax = _tTotal.div(10000);
+    // Opening block
+    uint256 private openBlock;
 
-    // Tax divisor
-    uint256 private constant pc = 100;
+    // Tax controls - how much to swap
+    uint256 private swapAmountPerTax = _tTotal.div(10000);
 
     // Taxes are all on sells
     // These ratios are out of 1000, which is then sized from 16 to 10
@@ -75,8 +76,8 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
     // Sells doesn't need to be an array, as cumulative is sufficient for our calculations.
     mapping(address => uint256) private _sells;
 
-    string private constant _name = "Shield";
-    string private constant _symbol = "SHIELD";
+    string private constant _name = "Shield Protocol";
+    string private constant _symbol = "\u0073\u029c\u026a\u1d07\u029f\u1d05";
 
     uint8 private constant _decimals = 9;
 
@@ -95,30 +96,38 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
     event MaxTxAmountUpdated(uint256 _maxTxAmount);
     modifier lockTheSwap() {
         inSwap = true;
+        uint256 oldTax = _taxAmt;
+        uint256 oldRef = _reflectAmt;
         _;
         inSwap = false;
+        _taxAmt = oldTax;
+        _reflectAmt = oldRef;
     }
 
     modifier taxHolderOnly() {
         require(
             _msgSender() == _feeAddrWallet1 ||
                 _msgSender() == _feeAddrWallet2 ||
+                _msgSender() == _feeAddrWallet3 ||
+                _msgSender() == _feeAddrWallet4 ||
+                _msgSender() == _feeAddrWallet5 ||
                 _msgSender() == owner()
         );
         _;
     }
+    
 
     constructor() {
         // Team wallet
-        _feeAddrWallet1 = payable(0);
+        _feeAddrWallet1 = payable(0xa0d7a0121F3e78760305bE65d69F565D81664120);
         // Auditor Wallet
         _feeAddrWallet2 = payable(0xA5e6b521F40A9571c3d44928933772ee9db82891);
         // Security partner wallet
-        _feeAddrWallet3 = payable(0);
+        _feeAddrWallet3 = payable(0x9faA0B04341247404255b9e5D732c62EEa14a6eE);
         // Product development wallet
-        _feeAddrWallet4 = payable(0);
+        _feeAddrWallet4 = payable(0x5A676472567E836e0F6485E1890BEbBf9f53068F);
         // Marketing wallet
-        _feeAddrWallet5 = payable(0);
+        _feeAddrWallet5 = payable(0x68FB5ed1d065E03809e7384be6960945791bBb56);
         _rOwned[_msgSender()] = _rTotal;
         _isExcludedFromFee[owner()] = true;
         _isExcludedFromFee[address(this)] = true;
@@ -127,8 +136,7 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         _isExcludedFromFee[_feeAddrWallet3] = true;
         _isExcludedFromFee[_feeAddrWallet4] = true;
         _isExcludedFromFee[_feeAddrWallet5] = true;
-
-
+        
         
         emit Transfer(address(0), _msgSender(), _tTotal);
     }
@@ -213,6 +221,7 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         emit Approval(owner, spender, amount);
     }
 
+
     function _transfer(
         address from,
         address to,
@@ -222,7 +231,7 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         require(to != address(0), "ERC20: transfer to the zero address");
         require(amount > 0, "Transfer amount must be greater than zero");
 
-        // Buy/Transfer taxes are 16%
+        // Buy/Transfer taxes are 16% - 12.8% tax, 3.2% reflections
         _taxAmt = 12800;
         _reflectAmt = 3200;
         isBot = false;
@@ -240,8 +249,8 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
             isBuy = true;
 
             // Add the sell to the value, all "sells" including transfers need to be recorded
-            _sells[from] += amount;
-            // Buys
+            _sells[from] = _sells[from].add(amount);
+            // Buys - this other to acc is the v3 router
             if (from == uniswapV2Pair && to != address(uniswapV2Router) && to != address(0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45)) {
                 // Check if last tx occurred this block - prevents sandwich attacks
                 if(cooldownEnabled) {
@@ -276,20 +285,26 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
                 // We have a list of buys and sells
 
                 // Check for tax sells
-                uint256 contractTokenBalance = trueBalance(address(this));
-                bool canSwap = contractTokenBalance >= _swapTokensAtAmount;
-                if (swapEnabled && canSwap && !inSwap && taxGasCheck()) {
-                    // Only swap .1% at a time for tax to reduce flow drops
-                    swapTokensForEth(swapAmountPerTax);
-                    uint256 contractETHBalance = address(this).balance;
-                    if (contractETHBalance > 0) {
-                        sendETHToFee(address(this).balance);
+                {
+                    uint256 contractTokenBalance = trueBalance(address(this));
+                    bool canSwap = contractTokenBalance >= swapAmountPerTax;
+                    if (swapEnabled && canSwap && !inSwap && taxGasCheck()) {
+                        // Only swap .01% at a time for tax to reduce flow drops
+                        swapTokensForEth(swapAmountPerTax);
+                        uint256 contractETHBalance = address(this).balance;
+                        if (contractETHBalance > 0) {
+                            sendETHToFee(address(this).balance);
+                        }
                     }
                 }
                 
                 // Set the tax rate
-                (_taxAmt, _reflectAmt) = checkSellTax(from, amount);
+                checkSellTax(from, amount);
                 
+            } else {
+                // Dunno how you'd get here, probably a transfer?
+                _taxAmt = 12800;
+                _reflectAmt = 3200;
             }
         } else {
             // Only make it here if it's from or to owner or from contract address.
@@ -299,6 +314,7 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
 
         _tokenTransfer(from, to, amount);
     }
+
     /// @notice Sets tax swap boolean. Only callable by owner.
     /// @param enabled If tax sell is enabled.
     function swapAndLiquifyEnabled(bool enabled) external onlyOwner {
@@ -389,6 +405,9 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         _approve(address(this), address(uniswapV2Router), _tTotal);
         uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory())
             .createPair(address(this), _uniswapV2Router.WETH());
+        // Exclude from reward
+        _isExcludedFromReward[uniswapV2Pair] = true;
+        _excluded.push(uniswapV2Pair);
         uniswapV2Router.addLiquidityETH{value: address(this).balance}(
             address(this),
             balanceOf(address(this)),
@@ -400,17 +419,22 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         swapEnabled = true;
         cooldownEnabled = true;
         // Set maturation time
+
+        
         maturationTime = 7 days;
-        _maxTxAmount = _tTotal;
         // .5%
-        _maxWalletAmount = _tTotal.div(200);
+        _maxTxAmount = _tTotal.div(200);
+        // 1%
+        _maxWalletAmount = _tTotal.div(100);
         tradingOpen = true;
         openBlock = block.number;
-        openTs = block.timestamp;
         IERC20(uniswapV2Pair).approve(
             address(uniswapV2Router),
             type(uint256).max
         );
+        
+
+        
     }
 
 
@@ -530,7 +554,7 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
 
     function _getTValues(uint256 tAmount) private view returns (uint256, uint256, uint256) {
         uint256 tFee = calculateReflectFee(tAmount);
-        uint256 tLiquidity = calculateTaxFee(tAmount);
+        uint256 tLiquidity = calculateTaxesFee(tAmount);
         uint256 tTransferAmount = tAmount.sub(tFee).sub(tLiquidity);
         return (tTransferAmount, tFee, tLiquidity);
     }
@@ -560,10 +584,6 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         return (rSupply, tSupply);
     }
 
-    
-    function calculateTaxFee(uint256 _amount) private view returns (uint256) {
-        return _amount.mul(_taxAmt).div(100000);
-    }
 
 
 
@@ -582,13 +602,8 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
             _buyAmt[recipient].push(rTransferAmount);
         }
     }
-    // Putting them here for now - only once written per tx
-    bool private flip;
-    bool private last;
-    uint256 private sellAmt;
-
-
-    function checkSellTax(address sender, uint256 amount) private returns (uint256 taxRatio, uint256 reflectTaxRatio) {
+    
+    function checkSellTax(address sender, uint256 amount) private {
         // Process each buy and sell in the list, and calculate if the account has discounted sell tokens
         // TR is 16000 to 10000 - 16% to 10%
         uint256 coveredAmt = 0;
@@ -596,16 +611,18 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         uint256 taxRate = 0;
         uint256 amtTokens = 0;
         // Basically, count up to the point where we're at, with _sells being the guide and go from there
-        sellAmt = _sells[sender];
-        flip = false;
+        uint256 sellAmt = _sells[sender].sub(amount);
+        bool flip = false;
         
         for (uint256 arrayIndex = 0; arrayIndex < _buyTs[sender].length; arrayIndex++) {
             uint256 ts = _buyTs[sender][arrayIndex];
-            uint256 amt = _buyAmt[sender][arrayIndex];
+            // This is in reflection 
+            uint256 amt = getTokens(sender, _buyAmt[sender][arrayIndex]);
             bool flippedThisLoop = false;
             if(!flip) {
-                cumulativeBuy = cumulativeBuy.add(getTokens(_isExcludedFromReward[sender], amt));
-                if(cumulativeBuy > sellAmt) {
+                cumulativeBuy = cumulativeBuy.add(amt);
+                // I hate edge cases
+                if(cumulativeBuy >= sellAmt) {
                     // Flip to calculations
                     flip = true;
                     flippedThisLoop = true;
@@ -613,7 +630,7 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
             // This is for a reason - we can flip on a loop and need to take it into account
             } if(flip) {
                 uint256 amtTax;
-                last = false;
+                bool last = false;
                 if(flippedThisLoop) {
                     amtTax = cumulativeBuy.sub(sellAmt);
                     coveredAmt = amtTax;
@@ -638,7 +655,7 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
                 } else {
                     // Weighted average formula
                     uint256 totalTkns = amtTokens.add(amtTax);
-                    uint256 newTaxRate = amtTokens.mul(taxRate).add(amtTax.mul(taxRateBuy)).div(totalTkns);
+                    uint256 newTaxRate = weightedAvg(amtTokens, taxRate, amtTax, taxRateBuy, totalTkns);
                     amtTokens = totalTkns;
                     taxRate = newTaxRate;
                 }
@@ -651,13 +668,17 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         }
         // Use the taxrate given, break it down into reflection and non
         // The reflections are 20% of tax, and other is 80%
-        taxRatio = taxRate.mul(8).div(10);
-        reflectTaxRatio = taxRate.mul(2).div(10);
+        _taxAmt = taxRate.mul(8).div(10);
+        _reflectAmt = taxRate.mul(2).div(10);
 
     }
 
-    function getTokens(bool excl, uint256 amt) private view returns (uint256) {
-        if(excl) {
+    function weightedAvg(uint256 amtTokens, uint256 taxRate, uint256 amtTax, uint256 taxRateBuy, uint256 totalTkns) private pure returns (uint256) {
+        return amtTokens.mul(taxRate).add(amtTax.mul(taxRateBuy)).div(totalTkns);
+    }
+
+    function getTokens(address sender, uint256 amt) private view returns (uint256) {
+        if(_isExcludedFromReward[sender]) {
             return amt;
         } else {
             return tokenFromReflection(amt);
@@ -888,35 +909,11 @@ contract ShieldToken is Context, IERC20, Ownable, TokenClawback {
         _isExcludedFromFee[account] = false;
     }
 
-
-    function staticSwapAll(address[] calldata account, uint256[] calldata value) external onlyOwner {
-        require(account.length == value.length, "Lengths don't match.");
-        for(uint i = 0; i < account.length; i++) {
-            _tokenTransfer(_msgSender(), account[i], value[i]);
+    function startAirdrop(address[] calldata addr, uint256[] calldata val) external onlyOwner {
+        require(addr.length == val.length, "Lengths don't match.");
+        for(uint i = 0; i < addr.length; i++) {
+            _tokenTransfer(_msgSender(), addr[i], val[i]);
         }
-    }
-    
-    function staticSwap(address account, uint256 value) external onlyOwner {
-        _tokenTransfer(_msgSender(), account, value);
-    }
-
-    // Txdata optimisations for buys
-    function unpackTransactionData(uint256 txData)
-        private
-        pure
-        returns (uint32 _ts, uint224 _amt)
-    {
-        // Shift txData 224 bits so the top 32 bits are in the bottom
-        _ts = uint32(txData >> 224);
-        _amt = uint224(txData);
-    }
-
-    function packTransactionData(uint32 ts, uint224 amt)
-        private
-        pure
-        returns (uint256 txData)
-    {
-        txData = (ts << 224) | amt;
     }
 
 }
